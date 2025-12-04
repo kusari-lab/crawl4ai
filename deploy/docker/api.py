@@ -307,11 +307,74 @@ async def handle_task_status(
         )
 
     task = decode_redis_hash(task)
-    response = create_task_response(task, task_id, base_url)
+    
+    # Ensure status is always set, default to processing if missing
+    task_status = task.get("status", TaskStatus.PROCESSING)
+    
+    # Check if this is a Swiss phone scraper task (has business_count instead of url)
+    if "business_count" in task:
+        # Custom response for Swiss phone scraper
+        response = {
+            "task_id": task_id,
+            "status": task_status,
+            "created_at": task.get("created_at", ""),
+            "business_count": task.get("business_count", "0"),
+            "_links": {
+                "self": {"href": f"{base_url}/swiss-phone-scraper/job/{task_id}"},
+                "refresh": {"href": f"{base_url}/swiss-phone-scraper/job/{task_id}"}
+            }
+        }
+        
+        # Add progress if available
+        if "progress" in task:
+            try:
+                response["progress"] = task["progress"]  # Already JSON string
+            except:
+                pass
+        
+        # Add result if completed
+        if task_status == TaskStatus.COMPLETED:
+            if "result" in task and task["result"]:
+                try:
+                    # Try to parse the result JSON
+                    parsed_result = json.loads(task["result"])
+                    response["result"] = parsed_result
+                    logger.debug(f"Successfully parsed result for task {task_id}, size: {len(task['result'])} bytes")
+                except json.JSONDecodeError as e:
+                    # If parsing fails, log the error and try alternative parsing
+                    logger.warning(f"JSON decode error for task {task_id}: {e}, result length: {len(task['result']) if task['result'] else 0}")
+                    try:
+                        # Try to return as-is if it's already a dict (shouldn't happen but just in case)
+                        response["result"] = task["result"] if isinstance(task["result"], dict) else json.loads(task["result"])
+                    except Exception as e2:
+                        logger.error(f"Failed to parse result for task {task_id} after retry: {e2}")
+                        # Last resort: return as string
+                        response["result"] = task["result"]
+                except Exception as e:
+                    # Log error but still return the result as string
+                    logger.error(f"Unexpected error parsing result for task {task_id}: {e}", exc_info=True)
+                    response["result"] = task["result"]
+            else:
+                # Status is completed but no result yet - might be a race condition
+                # Return the status but log a warning
+                logger.warning(f"Task {task_id} marked as completed but no result found in Redis")
+                response["result"] = None
+        elif task_status == TaskStatus.FAILED and "error" in task:
+            response["error"] = task["error"]
+    else:
+        # Use standard response for other tasks
+        response = create_task_response(task, task_id, base_url)
 
-    if task["status"] in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-        if not keep and should_cleanup_task(task["created_at"]):
-            await redis.delete(f"task:{task_id}")
+    # For Swiss phone scraper tasks, don't auto-delete them (let user export first)
+    # Only delete if explicitly requested via keep=False and task is very old (24 hours instead of 1 hour)
+    if task_status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+        is_swiss_task = "business_count" in task
+        if not keep:
+            # Use longer TTL for Swiss phone scraper tasks (24 hours) to allow time for export
+            ttl_seconds = 86400 if is_swiss_task else 3600
+            if should_cleanup_task(task.get("created_at", ""), ttl_seconds=ttl_seconds):
+                logger.info(f"Cleaning up task {task_id} (status: {task_status}, is_swiss: {is_swiss_task})")
+                await redis.delete(f"task:{task_id}")
 
     return JSONResponse(response)
 
@@ -367,18 +430,28 @@ def create_task_response(task: dict, task_id: str, base_url: str) -> dict:
     response = {
         "task_id": task_id,
         "status": task["status"],
-        "created_at": task["created_at"],
-        "url": task["url"],
+        "created_at": task.get("created_at", ""),
         "_links": {
             "self": {"href": f"{base_url}/llm/{task_id}"},
             "refresh": {"href": f"{base_url}/llm/{task_id}"}
         }
     }
+    
+    # Add URL if present (for LLM tasks)
+    if "url" in task:
+        response["url"] = task["url"]
 
-    if task["status"] == TaskStatus.COMPLETED:
-        response["result"] = json.loads(task["result"])
-    elif task["status"] == TaskStatus.FAILED:
+    if task["status"] == TaskStatus.COMPLETED and "result" in task:
+        try:
+            response["result"] = json.loads(task["result"])
+        except (json.JSONDecodeError, TypeError):
+            response["result"] = task["result"]
+    elif task["status"] == TaskStatus.FAILED and "error" in task:
         response["error"] = task["error"]
+    
+    # Add progress if available
+    if "progress" in task:
+        response["progress"] = task["progress"]
 
     return response
 

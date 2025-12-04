@@ -12,6 +12,8 @@ from api import (
     handle_crawl_job,
     handle_task_status,
 )
+from swiss_phone_scraper import process_swiss_phone_scraper
+from schemas import SwissPhoneScraperRequest
 
 # ------------- dependency placeholders -------------
 _redis = None        # will be injected from server.py
@@ -98,4 +100,64 @@ async def crawl_job_status(
     task_id: str,
     _td: Dict = Depends(lambda: _token_dep())
 ):
+    return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
+
+
+# ---------- SWISS PHONE SCRAPER job -------------------------------------------
+@router.post("/swiss-phone-scraper/job", status_code=202)
+async def swiss_phone_scraper_job_enqueue(
+    payload: SwissPhoneScraperRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    _td: Dict = Depends(lambda: _token_dep()),
+):
+    """Enqueue a Swiss phone scraper job."""
+    from datetime import datetime
+    import uuid
+    
+    if not payload.businesses:
+        from fastapi import HTTPException
+        raise HTTPException(400, "At least one business required")
+    
+    task_id = f"swiss_phone_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:8]}"
+    
+    from utils import TaskStatus
+    
+    await _redis.hset(f"task:{task_id}", mapping={
+        "status": TaskStatus.PROCESSING,
+        "created_at": datetime.now().isoformat(),
+        "business_count": str(len(payload.businesses))
+    })
+    
+    background_tasks.add_task(
+        process_swiss_phone_scraper,
+        _redis,
+        _config,
+        task_id,
+        payload.businesses,
+        payload.sources,
+        payload.config
+    )
+    
+    base_url = str(request.base_url)
+    from utils import TaskStatus
+    
+    return {
+        "task_id": task_id,
+        "status": TaskStatus.PROCESSING,
+        "business_count": len(payload.businesses),
+        "_links": {
+            "self": {"href": f"{base_url}/swiss-phone-scraper/job/{task_id}"},
+            "status": {"href": f"{base_url}/swiss-phone-scraper/job/{task_id}"}
+        }
+    }
+
+
+@router.get("/swiss-phone-scraper/job/{task_id}")
+async def swiss_phone_scraper_job_status(
+    request: Request,
+    task_id: str,
+    _td: Dict = Depends(lambda: _token_dep())
+):
+    """Get status of Swiss phone scraper job."""
     return await handle_task_status(_redis, task_id, base_url=str(request.base_url))

@@ -33,6 +33,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/clipboard.js/2.0.11/clipboard.min.js"></script>
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <!-- CodeMirror (python mode) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
@@ -186,10 +188,11 @@
                     <option value="crawl_stream">/crawl/stream</option>
                     <option value="md">/md</option>
                     <option value="llm">/llm</option>
+                    <option value="swiss-phone-scraper">/swiss-phone-scraper</option>
                 </select>
             </div>
             <div class="p-4">
-                <label class="block mb-2 text-sm">URL(s) - one per line</label>
+                <label id="urls-label" class="block mb-2 text-sm">URL(s) - one per line</label>
                 <textarea id="urls" class="w-full bg-dark border border-border rounded p-2 h-32 text-sm mb-4"
                     spellcheck="false">https://example.com</textarea>
 
@@ -233,6 +236,131 @@
                     </div>
                 </details>
 
+                <!-- Swiss Phone Scraper Options -->
+                <details id="swiss-phone-options" class="mb-4 hidden">
+                    <summary class="text-sm text-secondary cursor-pointer font-semibold">Swiss Phone Scraper Options</summary>
+                    <div class="mt-2 space-y-4 p-3 border border-border rounded bg-surface/30">
+                        <!-- CSV Upload -->
+                        <div class="bg-dark/50 p-3 rounded border-2 border-primary/30">
+                          <label class="block text-sm font-semibold text-primary mb-3">📄 CSV File Upload (Required)</label>
+                          <div class="relative">
+                              <input type="file" id="csv-file" accept=".csv" 
+                                  class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10">
+                              <button type="button" id="csv-upload-button"
+                                  class="bg-primary/20 border-2 border-primary rounded-lg px-6 py-3 text-sm font-medium w-full text-center hover:bg-primary/30 transition-all cursor-pointer relative shadow-lg hover:shadow-xl">
+                                  <span id="csv-file-label" class="text-primary font-semibold">📁 Choose CSV file...</span>
+                                  <span class="absolute right-4 top-1/2 -translate-y-1/2 text-2xl">📄</span>
+                              </button>
+                          </div>
+                          <div id="csv-info" class="mt-2 text-xs text-secondary hidden">
+                              <span id="csv-row-count" class="font-semibold text-primary"></span> rows loaded
+                          </div>
+                      </div>
+
+                        <!-- CSV Preview -->
+                        <div id="csv-preview" class="hidden">
+                            <label class="block text-xs text-secondary mb-1">CSV Preview (first 10 rows)</label>
+                            <div class="bg-dark border border-border rounded p-2 max-h-48 overflow-auto text-xs">
+                                <table id="csv-preview-table" class="w-full text-left">
+                                    <thead id="csv-preview-head"></thead>
+                                    <tbody id="csv-preview-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Row Selection -->
+                        <div>
+                            <label class="block text-xs text-secondary mb-1">Row Selection</label>
+                            <div class="space-y-2">
+                                <label class="flex items-center">
+                                    <input type="radio" name="row-selection" value="all" checked class="mr-2">
+                                    <span class="text-sm">All businesses</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="radio" name="row-selection" value="range" class="mr-2">
+                                    <span class="text-sm">Range: </span>
+                                    <input type="number" id="row-from" placeholder="From" min="1" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20 ml-2">
+                                    <span class="text-sm mx-2">to</span>
+                                    <input type="number" id="row-to" placeholder="To" min="1" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20">
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="radio" name="row-selection" value="specific" class="mr-2">
+                                    <span class="text-sm">Specific rows: </span>
+                                    <input type="text" id="row-specific" placeholder="e.g., 1,5,10-15,20" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm flex-1 ml-2">
+                                </label>
+                            </div>
+                            <div id="selected-count" class="mt-2 text-xs text-secondary hidden">
+                                <span id="selected-count-text"></span> businesses selected
+                            </div>
+                        </div>
+
+                        <!-- Source Selection -->
+                        <div>
+                            <label class="block text-xs text-secondary mb-1">Data Sources</label>
+                            <div class="space-y-1">
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="source" value="local_ch" checked class="mr-2">
+                                    <span class="text-sm">local.ch</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="source" value="search_ch" checked class="mr-2">
+                                    <span class="text-sm">search.ch</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="source" value="tel_search_ch" checked class="mr-2">
+                                    <span class="text-sm">tel.search.ch</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="source" value="google_search" checked class="mr-2">
+                                    <span class="text-sm">Google Search</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="source" value="zefix_ch" checked class="mr-2">
+                                    <span class="text-sm">zefix.ch</span>
+                                </label>
+                            </div>
+                            <div class="mt-2 flex space-x-2">
+                                <button id="select-all-sources" class="text-xs text-primary hover:underline">Select All</button>
+                                <button id="deselect-all-sources" class="text-xs text-primary hover:underline">Deselect All</button>
+                            </div>
+                        </div>
+
+                        <!-- Progress Display -->
+                        <div id="swiss-progress" class="hidden">
+                            <div class="mb-2">
+                                <div class="flex justify-between text-xs text-secondary mb-1">
+                                    <span id="progress-text">Processing...</span>
+                                    <span id="progress-percent">0%</span>
+                                </div>
+                                <div class="w-full bg-dark border border-border rounded-full h-2">
+                                    <div id="progress-bar" class="bg-primary h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                    <span class="text-secondary">Found:</span>
+                                    <span id="stats-found" class="text-primary ml-1">0</span>
+                                </div>
+                                <div>
+                                    <span class="text-secondary">Not Found:</span>
+                                    <span id="stats-not-found" class="text-light ml-1">0</span>
+                                </div>
+                                <div>
+                                    <span class="text-secondary">Success Rate:</span>
+                                    <span id="stats-success-rate" class="text-primary ml-1">0%</span>
+                                </div>
+                                <div>
+                                    <span class="text-secondary">Current:</span>
+                                    <span id="stats-current" class="text-light ml-1">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
                 <!-- Advanced config for /crawl endpoints -->
                 <details id="adv-config" class="mb-4">
                     <summary class="text-sm text-secondary cursor-pointer">Advanced Config <span
@@ -271,6 +399,15 @@
                     <button id="run-btn" class="bg-primary text-dark px-4 py-2 rounded hover:bg-primarydim font-medium">
                         Run (⌘/Ctrl+Enter)
                     </button>
+                    <button id="swiss-start-btn" class="bg-primary text-dark px-4 py-2 rounded hover:bg-primarydim font-medium hidden">
+                        Start Scraping
+                    </button>
+                    <button id="swiss-stop-btn" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 font-medium hidden">
+                        Stop
+                    </button>
+                    <button id="swiss-export-btn" class="border border-border px-4 py-2 rounded hover:bg-surface hidden">
+                        Export CSV
+                    </button>
                     <button id="export-btn" class="border border-border px-4 py-2 rounded hover:bg-surface hidden">
                         Export Python Code
                     </button>
@@ -301,6 +438,7 @@
         <section class="bg-surface rounded-lg border border-border overflow-hidden flex-1 flex flex-col">
             <div class="border-b border-border flex">
                 <button data-tab="response" class="tab-btn active px-4 py-2 border-r border-border">Response</button>
+                <button data-tab="results" class="tab-btn px-4 py-2 border-r border-border hidden">Results</button>
                 <button data-tab="python" class="tab-btn px-4 py-2 border-r border-border">Python</button>
                 <button data-tab="curl" class="tab-btn px-4 py-2">cURL</button>
             </div>
@@ -336,6 +474,35 @@
                         </button>
                     </div>
                     <pre id="curl-content" class="p-4 text-sm h-full"><code class="bash hljs"></code></pre>
+                </div>
+
+                <!-- Results Tab (for Swiss Phone Scraper) -->
+                <div class="tab-content hidden h-full">
+                    <div class="absolute right-2 top-2">
+                        <button id="export-results-btn" class="bg-surface border border-border rounded px-2 py-1 text-xs hover:bg-dark">
+                            Export CSV
+                        </button>
+                    </div>
+                    <div class="p-4 h-full overflow-auto">
+                        <table id="results-table" class="w-full text-sm border-collapse">
+                            <thead class="sticky top-0 bg-surface border-b border-border">
+                                <tr>
+                                    <th class="text-left p-2 border-b border-border">Row #</th>
+                                    <th class="text-left p-2 border-b border-border">Business Name</th>
+                                    <th class="text-left p-2 border-b border-border">Phone Number</th>
+                                    <th class="text-left p-2 border-b border-border">Source</th>
+                                    <th class="text-left p-2 border-b border-border">Source URL</th>
+                                    <th class="text-left p-2 border-b border-border">Confidence</th>
+                                    <th class="text-left p-2 border-b border-border">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="results-table-body">
+                                <tr>
+                                    <td colspan="7" class="text-center p-4 text-secondary">No results yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </section>
@@ -403,7 +570,10 @@
 
                 btn.classList.add('active');
                 const tabName = btn.dataset.tab;
-                document.querySelector(`#${tabName}-content`).parentElement.classList.remove('hidden');
+                const contentEl = document.querySelector(`#${tabName}-content`);
+                if (contentEl) {
+                    contentEl.parentElement.classList.remove('hidden');
+                }
 
                 // Re-highlight content when switching tabs
                 const activeCode = document.querySelector(`#${tabName}-content code`);
@@ -484,25 +654,80 @@
             const endpoint = e.target.value;
             const mdOptions = document.getElementById('md-options');
             const llmOptions = document.getElementById('llm-options');
+            const swissOptions = document.getElementById('swiss-phone-options');
             const advConfig = document.getElementById('adv-config');
+            const urlsElement = document.getElementById('urls');
+            const urlsLabel = document.getElementById('urls-label');
+            const runBtn = document.getElementById('run-btn');
+            const swissStartBtn = document.getElementById('swiss-start-btn');
+            const swissStopBtn = document.getElementById('swiss-stop-btn');
+            const swissExportBtn = document.getElementById('swiss-export-btn');
             
             // Hide all option sections first
-            mdOptions.classList.add('hidden');
-            llmOptions.classList.add('hidden');
-            advConfig.classList.add('hidden');
+            if (mdOptions) mdOptions.classList.add('hidden');
+            if (llmOptions) llmOptions.classList.add('hidden');
+            if (swissOptions) swissOptions.classList.add('hidden');
+            if (advConfig) advConfig.classList.add('hidden');
+            
+            // Show/hide buttons
+            if (runBtn) runBtn.classList.remove('hidden');
+            if (swissStartBtn) swissStartBtn.classList.add('hidden');
+            if (swissStopBtn) swissStopBtn.classList.add('hidden');
+            if (swissExportBtn) swissExportBtn.classList.add('hidden');
             
             // Show the appropriate section based on endpoint
             if (endpoint === 'md') {
-                mdOptions.classList.remove('hidden');
-                // Auto-open the /md options
-                mdOptions.setAttribute('open', '');
+                if (mdOptions) {
+                    mdOptions.classList.remove('hidden');
+                    mdOptions.setAttribute('open', '');
+                }
+                // Show URLs section for /md
+                if (urlsLabel) urlsLabel.classList.remove('hidden');
+                if (urlsElement) urlsElement.classList.remove('hidden');
             } else if (endpoint === 'llm') {
-                llmOptions.classList.remove('hidden');
-                // Auto-open the /llm options
-                llmOptions.setAttribute('open', '');
+                if (llmOptions) {
+                    llmOptions.classList.remove('hidden');
+                    llmOptions.setAttribute('open', '');
+                }
+                // Show URLs section for /llm
+                if (urlsLabel) urlsLabel.classList.remove('hidden');
+                if (urlsElement) urlsElement.classList.remove('hidden');
+            } else if (endpoint === 'swiss-phone-scraper') {
+                if (swissOptions) {
+                    swissOptions.classList.remove('hidden');
+                    swissOptions.setAttribute('open', '');
+                    // Force open the details element
+                    if (swissOptions.tagName.toLowerCase() === 'details') {
+                        swissOptions.open = true;
+                    }
+                }
+                // Hide only the URLs label and textarea, not the parent container
+                if (urlsLabel) urlsLabel.classList.add('hidden');
+                if (urlsElement) urlsElement.classList.add('hidden');
+                if (runBtn) runBtn.classList.add('hidden');
+                if (swissStartBtn) swissStartBtn.classList.remove('hidden');
+                // Show Results tab for Swiss phone scraper
+                const resultsTab = document.querySelector('button[data-tab="results"]');
+                if (resultsTab) {
+                    resultsTab.classList.remove('hidden');
+                }
+                // Scroll to the options section to make it visible
+                setTimeout(() => {
+                    if (swissOptions) {
+                        swissOptions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }
+                }, 100);
             } else {
+                // Hide Results tab for other endpoints
+                const resultsTab = document.querySelector('button[data-tab="results"]');
+                if (resultsTab) {
+                    resultsTab.classList.add('hidden');
+                }
                 // For /crawl endpoints, show the advanced config
-                advConfig.classList.remove('hidden');
+                if (advConfig) advConfig.classList.remove('hidden');
+                // Show URLs section for /crawl
+                if (urlsLabel) urlsLabel.classList.remove('hidden');
+                if (urlsElement) urlsElement.classList.remove('hidden');
             }
         });
 
@@ -599,7 +824,19 @@
         // Main run function
         async function runCrawl() {
             const endpoint = document.getElementById('endpoint').value;
-            const urls = document.getElementById('urls').value.trim().split(/\n/).filter(u => u);
+            
+            // Don't run for Swiss phone scraper - it has its own handler
+            if (endpoint === 'swiss-phone-scraper') {
+                console.warn('Swiss phone scraper should use startSwissPhoneScraper, not runCrawl');
+                return;
+            }
+            
+            const urlsElement = document.getElementById('urls');
+            if (!urlsElement) {
+                console.error('URLs element not found');
+                return;
+            }
+            const urls = urlsElement.value.trim().split(/\n/).filter(u => u);
             // 1) grab python from CodeMirror, validate via /config/dump
             let advConfig = {};
             try {
@@ -951,6 +1188,528 @@
             // Initialize copy buttons
             initCopyButtons();
         }
+
+        // ================ SWISS PHONE SCRAPER ================
+        let csvData = [];
+        let currentTaskId = null;
+        let pollingInterval = null;
+        let selectedBusinesses = [];
+
+        // CSV Upload Handler
+        const csvFileInput = document.getElementById('csv-file');
+        const csvUploadButton = document.getElementById('csv-upload-button');
+        
+        // Make the button trigger the file input
+        if (csvUploadButton && csvFileInput) {
+            csvUploadButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                csvFileInput.click();
+            });
+        }
+        
+        // Also handle the old button reference for compatibility
+        const csvFileButton = csvFileInput?.parentElement?.querySelector('button');
+        if (csvFileButton && csvFileInput && csvFileButton !== csvUploadButton) {
+            csvFileButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                csvFileInput.click();
+            });
+        }
+
+        csvFileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // Update the button label to show selected filename
+            const label = document.getElementById('csv-file-label');
+            if (label) {
+                label.textContent = `✓ ${file.name}`;
+                label.classList.remove('text-secondary');
+                label.classList.add('text-primary');
+            }
+            // Update button appearance
+            if (csvUploadButton) {
+                csvUploadButton.classList.add('bg-primary/40', 'border-primary');
+                csvUploadButton.classList.remove('bg-primary/20');
+            }
+
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    csvData = results.data;
+                    displayCSVPreview(csvData);
+                    updateRowSelection();
+                    document.getElementById('csv-info').classList.remove('hidden');
+                    document.getElementById('csv-row-count').textContent = csvData.length;
+                    const startBtn = document.getElementById('swiss-start-btn');
+                    if (startBtn) {
+                        startBtn.disabled = false;
+                        startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    }
+                },
+                error: function(error) {
+                    alert('Error parsing CSV: ' + error.message);
+                    // Reset label on error
+                    if (label) {
+                        label.textContent = 'Choose CSV file...';
+                        label.classList.remove('text-primary');
+                        label.classList.add('text-secondary');
+                    }
+                }
+            });
+        });
+
+        function displayCSVPreview(data) {
+            const preview = document.getElementById('csv-preview');
+            const head = document.getElementById('csv-preview-head');
+            const body = document.getElementById('csv-preview-body');
+            
+            if (data.length === 0) return;
+            
+            preview.classList.remove('hidden');
+            
+            // Get headers from first row
+            const headers = Object.keys(data[0]);
+            head.innerHTML = '<tr>' + headers.map(h => `<th class="p-1 border-b border-border text-left">${h}</th>`).join('') + '</tr>';
+            
+            // Show first 10 rows
+            body.innerHTML = data.slice(0, 10).map(row => 
+                '<tr class="border-b border-border">' + 
+                headers.map(h => `<td class="p-1 text-xs">${(row[h] || '').substring(0, 30)}</td>`).join('') + 
+                '</tr>'
+            ).join('');
+        }
+
+        // Row Selection Handlers
+        document.querySelectorAll('input[name="row-selection"]').forEach(radio => {
+            radio.addEventListener('change', updateRowSelection);
+        });
+        document.getElementById('row-from').addEventListener('input', updateRowSelection);
+        document.getElementById('row-to').addEventListener('input', updateRowSelection);
+        document.getElementById('row-specific').addEventListener('input', updateRowSelection);
+
+        function parseRowSelection(selection, totalRows) {
+            if (selection === 'all' || !selection) {
+                return Array.from({length: totalRows}, (_, i) => i);
+            }
+            
+            if (selection === 'range') {
+                const from = parseInt(document.getElementById('row-from').value) || 1;
+                const to = parseInt(document.getElementById('row-to').value) || totalRows;
+                const start = Math.max(0, from - 1);
+                const end = Math.min(totalRows, to);
+                return Array.from({length: end - start}, (_, i) => start + i);
+            }
+            
+            if (selection === 'specific') {
+                const input = document.getElementById('row-specific').value.trim();
+                if (!input) return [];
+                
+                const indices = new Set();
+                const parts = input.split(',');
+                
+                parts.forEach(part => {
+                    part = part.trim();
+                    if (part.includes('-')) {
+                        const [start, end] = part.split('-').map(x => parseInt(x.trim()));
+                        if (start && end) {
+                            for (let i = Math.max(1, start); i <= Math.min(totalRows, end); i++) {
+                                indices.add(i - 1); // Convert to 0-based
+                            }
+                        }
+                    } else {
+                        const num = parseInt(part);
+                        if (num && num >= 1 && num <= totalRows) {
+                            indices.add(num - 1); // Convert to 0-based
+                        }
+                    }
+                });
+                
+                return Array.from(indices).sort((a, b) => a - b);
+            }
+            
+            return [];
+        }
+
+        function updateRowSelection() {
+            if (csvData.length === 0) return;
+            
+            const selection = document.querySelector('input[name="row-selection"]:checked').value;
+            const indices = parseRowSelection(selection, csvData.length);
+            selectedBusinesses = indices.map(i => csvData[i]);
+            
+            const countEl = document.getElementById('selected-count');
+            const countTextEl = document.getElementById('selected-count-text');
+            
+            if (indices.length > 0) {
+                countEl.classList.remove('hidden');
+                countTextEl.textContent = indices.length;
+            } else {
+                countEl.classList.add('hidden');
+            }
+        }
+
+        // Source Selection Handlers
+        document.getElementById('select-all-sources').addEventListener('click', function() {
+            document.querySelectorAll('input[name="source"]').forEach(cb => cb.checked = true);
+        });
+        
+        document.getElementById('deselect-all-sources').addEventListener('click', function() {
+            document.querySelectorAll('input[name="source"]').forEach(cb => cb.checked = false);
+        });
+
+        // Start Scraping
+        document.getElementById('swiss-start-btn').addEventListener('click', startSwissPhoneScraper);
+        document.getElementById('swiss-stop-btn').addEventListener('click', stopSwissPhoneScraper);
+
+        async function startSwissPhoneScraper() {
+            if (!csvData || csvData.length === 0) {
+                alert('Please upload a CSV file first');
+                return;
+            }
+            
+            if (selectedBusinesses.length === 0) {
+                alert('Please select at least one business');
+                return;
+            }
+            
+            const selectedSources = Array.from(document.querySelectorAll('input[name="source"]:checked'))
+                .map(cb => cb.value);
+            
+            if (selectedSources.length === 0) {
+                alert('Please select at least one source');
+                return;
+            }
+            
+            // Update UI
+            document.getElementById('swiss-start-btn').classList.add('hidden');
+            document.getElementById('swiss-stop-btn').classList.remove('hidden');
+            document.getElementById('swiss-progress').classList.remove('hidden');
+            document.getElementById('swiss-export-btn').classList.add('hidden');
+            
+            // Clear previous results
+            document.getElementById('results-table-body').innerHTML = 
+                '<tr><td colspan="7" class="text-center p-4 text-secondary">Processing...</td></tr>';
+            
+            // Show results tab
+            const resultsTab = document.querySelector('button[data-tab="results"]');
+            if (resultsTab) {
+                resultsTab.classList.remove('hidden');
+                resultsTab.click();
+            }
+            
+            try {
+                const response = await fetch('/swiss-phone-scraper/job', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        businesses: selectedBusinesses,
+                        sources: selectedSources
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to start job');
+                }
+                
+                const result = await response.json();
+                currentTaskId = result.task_id;
+                
+                // Start polling
+                pollJobStatus();
+            } catch (error) {
+                alert('Error starting job: ' + error.message);
+                resetSwissUI();
+            }
+        }
+
+        function stopSwissPhoneScraper() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+            resetSwissUI();
+        }
+
+        function resetSwissUI() {
+            document.getElementById('swiss-start-btn').classList.remove('hidden');
+            document.getElementById('swiss-stop-btn').classList.add('hidden');
+            currentTaskId = null;
+        }
+
+        async function pollJobStatus() {
+            if (!currentTaskId) return;
+            
+            pollingInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/swiss-phone-scraper/job/${currentTaskId}`);
+                    if (!response.ok) {
+                        throw new Error('Failed to get status');
+                    }
+                    
+                    const status = await response.json();
+                    updateProgressUI(status);
+                    
+                    if (status.status === 'completed') {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        // Parse result - it might be nested or a string
+                        let result = status.result;
+                        if (typeof result === 'string') {
+                            try {
+                                result = JSON.parse(result);
+                            } catch (e) {
+                                console.error('Error parsing result:', e);
+                                result = null;
+                            }
+                        }
+                        if (result) {
+                            displayResults(result);
+                        }
+                        document.getElementById('swiss-stop-btn').classList.add('hidden');
+                        document.getElementById('swiss-export-btn').classList.remove('hidden');
+                        document.getElementById('progress-text').textContent = 'Completed';
+                        document.getElementById('stats-current').textContent = '-';
+                        document.getElementById('progress-bar').style.width = '100%';
+                        document.getElementById('progress-percent').textContent = '100%';
+                    } else if (status.status === 'failed') {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        alert('Job failed: ' + (status.error || 'Unknown error'));
+                        resetSwissUI();
+                    } else if (status.status === 'processing') {
+                        // Update current business being processed if available
+                        if (status.progress) {
+                            const progress = typeof status.progress === 'string' ? 
+                                JSON.parse(status.progress) : status.progress;
+                            const current = progress.processed || 0;
+                            const total = progress.total || 0;
+                            if (current > 0 && selectedBusinesses[current - 1]) {
+                                const business = selectedBusinesses[current - 1];
+                                const name = business.COMPANY_NAME0 || business.ADDRESS_LINE1 || 'Unknown';
+                                document.getElementById('stats-current').textContent = 
+                                    name.substring(0, 30) + (name.length > 30 ? '...' : '');
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error polling status:', error);
+                }
+            }, 2000); // Poll every 2 seconds
+        }
+
+        function updateProgressUI(status) {
+            if (status.progress) {
+                let progress;
+                if (typeof status.progress === 'string') {
+                    try {
+                        progress = JSON.parse(status.progress);
+                    } catch (e) {
+                        console.error('Error parsing progress:', e);
+                        return;
+                    }
+                } else {
+                    progress = status.progress;
+                }
+                
+                const processed = progress.processed || 0;
+                const total = progress.total || 1;
+                const found = progress.found || 0;
+                const notFound = progress.not_found || 0;
+                const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+                
+                document.getElementById('progress-text').textContent = 
+                    `Processing ${processed}/${total} businesses`;
+                document.getElementById('progress-percent').textContent = percent + '%';
+                document.getElementById('progress-bar').style.width = percent + '%';
+                document.getElementById('stats-found').textContent = found;
+                document.getElementById('stats-not-found').textContent = notFound;
+                document.getElementById('stats-success-rate').textContent = 
+                    total > 0 ? Math.round((found / total) * 100) + '%' : '0%';
+            }
+        }
+
+        function displayResults(result) {
+            if (!result) return;
+            
+            // Handle both direct result object and result.result (from API response)
+            const results = result.results || (result.result && result.result.results) || [];
+            const statistics = result.statistics || (result.result && result.result.statistics) || {};
+            
+            if (results.length === 0) {
+                document.getElementById('results-table-body').innerHTML = 
+                    '<tr><td colspan="7" class="text-center p-4 text-secondary">No results</td></tr>';
+                return;
+            }
+            
+            const tbody = document.getElementById('results-table-body');
+            tbody.innerHTML = '';
+            
+            results.forEach((business, index) => {
+                const row = document.createElement('tr');
+                row.className = 'border-b border-border hover:bg-surface/50';
+                
+                const businessName = business.COMPANY_NAME0 || business.ADDRESS_LINE1 || 
+                    `${business.FIRSTNAME || ''} ${business.LASTNAME || ''}`.trim() || 'Unknown';
+                
+                const phone = business.phone_number || '';
+                const source = business.source || '';
+                const sourceUrl = business.source_url || '';
+                const confidence = business.confidence_score || '';
+                
+                // Create clickable URL link
+                const urlCell = sourceUrl ? 
+                    `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" 
+                        class="text-primary hover:underline text-xs break-all" 
+                        title="${escapeHtml(sourceUrl)}">
+                        ${escapeHtml(sourceUrl.length > 50 ? sourceUrl.substring(0, 50) + '...' : sourceUrl)}
+                    </a>` : 
+                    '-';
+                
+                row.innerHTML = `
+                    <td class="p-2">${index + 1}</td>
+                    <td class="p-2">${escapeHtml(businessName)}</td>
+                    <td class="p-2 ${phone ? 'text-primary font-medium' : 'text-secondary'}">
+                        ${escapeHtml(phone) || '-'}
+                    </td>
+                    <td class="p-2 text-secondary text-xs">${escapeHtml(source) || '-'}</td>
+                    <td class="p-2 text-xs max-w-xs">${urlCell}</td>
+                    <td class="p-2">
+                        ${confidence ? `<span class="px-2 py-1 rounded text-xs ${
+                            confidence === 'high' ? 'bg-green-500/20 text-green-400' :
+                            confidence === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-gray-500/20 text-gray-400'
+                        }">${escapeHtml(confidence)}</span>` : '-'}
+                    </td>
+                    <td class="p-2">
+                        <span class="px-2 py-1 rounded text-xs ${
+                            phone ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                        }">
+                            ${phone ? 'Found' : 'Not Found'}
+                        </span>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+            // Update final stats
+            if (statistics && Object.keys(statistics).length > 0) {
+                document.getElementById('stats-found').textContent = statistics.found || 0;
+                document.getElementById('stats-not-found').textContent = statistics.not_found || 0;
+                const total = statistics.total || 1;
+                document.getElementById('stats-success-rate').textContent = 
+                    Math.round(((statistics.found || 0) / total) * 100) + '%';
+            }
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Export Results
+        document.getElementById('swiss-export-btn').addEventListener('click', function() {
+            if (!currentTaskId) {
+                alert('No results to export');
+                return;
+            }
+            
+            // Fetch the completed result to get full data
+            fetch(`/swiss-phone-scraper/job/${currentTaskId}`)
+                .then(res => {
+                    if (!res.ok) {
+                        // Handle HTTP errors
+                        if (res.status === 404) {
+                            throw new Error('Task not found. It may have been deleted or expired.');
+                        }
+                        return res.json().then(data => {
+                            throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                        });
+                    }
+                    return res.json();
+                })
+                .then(status => {
+                    console.log('Export status:', status); // Debug log
+                    
+                    // Check if status field exists
+                    if (!status || status.status === undefined || status.status === null) {
+                        console.error('Invalid status response:', status);
+                        alert('Invalid response from server. Please try refreshing the page and exporting again.');
+                        return;
+                    }
+                    
+                    if (status.status !== 'completed') {
+                        const statusText = status.status || 'unknown';
+                        alert(`Job status: ${statusText}. Results not available yet.`);
+                        return;
+                    }
+                    
+                    // Check for result in multiple possible locations
+                    let result = status.result;
+                    if (!result) {
+                        // Try to get result from nested structure
+                        result = status.data?.result || status.response?.result;
+                    }
+                    
+                    if (!result) {
+                        alert('Results not available yet. The job may have completed but results are still being saved. Please try again in a moment.');
+                        console.error('No result found in status:', status);
+                        return;
+                    }
+                    
+                    // Handle string result
+                    if (typeof result === 'string') {
+                        try {
+                            result = JSON.parse(result);
+                        } catch (e) {
+                            console.error('Error parsing result string:', e);
+                            alert('Error parsing results. Please try again.');
+                            return;
+                        }
+                    }
+                    
+                    const results = result.results || result.result?.results || [];
+                    if (results.length === 0) {
+                        alert('No results to export');
+                        return;
+                    }
+                    
+                    // Get all original columns plus new ones
+                    const allKeys = new Set();
+                    results.forEach(business => {
+                        Object.keys(business).forEach(key => allKeys.add(key));
+                    });
+                    
+                    const headers = Array.from(allKeys);
+                    const csvRows = [headers.join(',')];
+                    
+                    results.forEach(business => {
+                        const values = headers.map(header => {
+                            const value = business[header] || '';
+                            return '"' + String(value).replace(/"/g, '""') + '"';
+                        });
+                        csvRows.push(values.join(','));
+                    });
+                    
+                    const csv = csvRows.join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `swiss-phone-results-${Date.now()}.csv`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                })
+                .catch(error => {
+                    alert('Error exporting results: ' + error.message);
+                });
+        });
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', initUI);

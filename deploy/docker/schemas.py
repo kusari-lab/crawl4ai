@@ -40,3 +40,9 @@ class JSEndpointRequest(BaseModel):
         ...,
         description="List of separated JavaScript snippets to execute"
     )
+
+
+class SwissPhoneScraperRequest(BaseModel):
+    businesses: Optional[List[Dict]] = Field(None, description="JSON array of business objects")
+    sources: Optional[List[str]] = Field(None, description="Which sources to use (local_ch, search_ch, etc.)")
+    config: Optional[Dict] = Field(None, description="Override configuration")

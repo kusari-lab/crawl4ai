@@ -1,0 +1,33 @@
+llm:
+  provider: "openai/gpt-4o-mini"  # or from .llm.env
+  api_token: null  # Load from .llm.env
+  
+sources:
+  local_ch:
+    enabled: true
+    delay_seconds: 2
+  search_ch:
+    enabled: true
+    delay_seconds: 2
+  tel_search_ch:
+    enabled: true
+    delay_seconds: 2
+  google_search:
+    enabled: true
+    delay_seconds: 3
+  zefix_ch:
+    enabled: true
+    delay_seconds: 2
+
+retry:
+  max_attempts: 3
+  base_delay: 1
+  exponential_backoff: true
+
+progress:
+  save_interval: 50  # Save every N businesses
+  
+validation:
+  require_address_match: true
+  min_confidence: "low"  # low/medium/high
+

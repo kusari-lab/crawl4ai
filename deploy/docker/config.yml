@@ -89,3 +89,35 @@ observability:
     endpoint: "/metrics"
   health_check:
     endpoint: "/health"
+
+# Swiss Phone Scraper Configuration
+swiss_phone_scraper:
+  sources:
+    local_ch:
+      enabled: true
+      delay_seconds: 2
+    search_ch:
+      enabled: true
+      delay_seconds: 2
+    tel_search_ch:
+      enabled: true
+      delay_seconds: 2
+    google_search:
+      enabled: true
+      delay_seconds: 3
+    zefix_ch:
+      enabled: true
+      delay_seconds: 2
+  retry:
+    max_attempts: 3
+    base_delay: 1
+    exponential_backoff: true
+  progress:
+    save_interval: 50
+  validation:
+    require_address_match: true
+    min_confidence: "low"
+  ad_filtering:
+    enabled: true
+    strict_mode: true  # If true, reject phone if any ad indicators found
+    validation_confidence_threshold: "medium"  # Only validate if confidence is below this

@@ -169,6 +169,8 @@ RUN crawl4ai-doctor
 
 # Copy application code
 COPY deploy/docker/* ${APP_HOME}/
+# Explicitly copy scrapers directory to ensure it's included
+COPY deploy/docker/scrapers ${APP_HOME}/scrapers
 
 # copy the playground + any future static assets
 COPY deploy/docker/static ${APP_HOME}/static
