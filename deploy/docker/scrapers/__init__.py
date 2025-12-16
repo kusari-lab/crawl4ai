@@ -6,5 +6,6 @@ __all__ = [
     'SearchChScraper',
     'TelSearchChScraper',
     'GoogleSearchScraper',
-    'ZefixChScraper',
+    'FacebookSearchScraper',
+    'InstagramSearchScraper',
 ]

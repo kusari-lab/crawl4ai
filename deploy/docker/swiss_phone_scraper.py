@@ -21,13 +21,31 @@ from scrapers.local_ch import LocalChScraper
 from scrapers.search_ch import SearchChScraper
 from scrapers.tel_search_ch import TelSearchChScraper
 from scrapers.google_search import GoogleSearchScraper
-from scrapers.zefix_ch import ZefixChScraper
+from scrapers.facebook_search import FacebookSearchScraper
+from scrapers.instagram_search import InstagramSearchScraper
 from utils import PhoneValidator
 from utils import TaskStatus
 from crawler_pool import get_crawler
 from crawl4ai import BrowserConfig
 
 logger = logging.getLogger(__name__)
+
+# Import business preprocessor (note: `deploy/docker/utils.py` shadows `deploy/docker/utils/`)
+try:
+    import importlib.util
+
+    _pre_path = Path(__file__).parent / "utils" / "business_preprocessor.py"
+    if _pre_path.exists():
+        _spec = importlib.util.spec_from_file_location("business_preprocessor", _pre_path)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        preprocess_business_row = _mod.preprocess_business_row
+    else:
+        raise ImportError("business_preprocessor not found")
+except (ImportError, Exception):
+    def preprocess_business_row(business: Dict) -> Dict:  # type: ignore
+        """Fallback: return business as-is."""
+        return business
 
 
 async def process_swiss_phone_scraper(
@@ -53,7 +71,8 @@ async def process_swiss_phone_scraper(
             'search_ch': SearchChScraper,
             'tel_search_ch': TelSearchChScraper,
             'google_search': GoogleSearchScraper,
-            'zefix_ch': ZefixChScraper,
+            'facebook_search': FacebookSearchScraper,
+            'instagram_search': InstagramSearchScraper,
         }
         
         # Filter scrapers based on sources parameter
@@ -114,6 +133,17 @@ async def process_swiss_phone_scraper(
         crawler = await get_crawler(browser_config)
         
         try:
+            # Pre-process and prioritize rows (HIGH quality first)
+            businesses = [preprocess_business_row(b) for b in (businesses or [])]
+            businesses.sort(key=lambda b: int(b.get('search_priority', 2)) if str(b.get('search_priority', '')).isdigit() else 2)
+
+            # Split scrapers: phone-oriented vs social link discovery
+            phone_scrapers = [s for s in scrapers if getattr(s, "provides_phone", True)]
+            social_scrapers = [s for s in scrapers if not getattr(s, "provides_phone", True)]
+            social_cfg = scraper_config.get('social_links', {}) if isinstance(scraper_config, dict) else {}
+            social_enabled = social_cfg.get('enabled', True)
+            social_run_even_if_phone_found = social_cfg.get('run_even_if_phone_found', True)
+
             # Process each business
             for idx, business in enumerate(businesses):
                 business_name = business.get('COMPANY_NAME0', '').strip()
@@ -128,17 +158,26 @@ async def process_swiss_phone_scraper(
                 source = None
                 confidence = None
                 source_url = None
+                found_business_name = None
+                found_address = None
+                found_status = None
+                found_website = None
+                match_method = None
+                address_similarity = None
                 sources_found_in = []
+                social_links = {}  # facebook_url / instagram_url
                 
                 if enable_double_check:
                     # Multi-source validation: collect results from all sources
-                    phone_results = {}  # Map of normalized phone -> list of (source, confidence, url)
+                    phone_results = {}  # Map of normalized phone -> list of result dicts
                     
-                    for scraper in scrapers:
+                    for scraper in phone_scrapers:
                         stats['by_source'][scraper.source_name]['attempted'] += 1
                         
                         try:
-                            found_phone, found_confidence, found_url = await scraper.scrape(business, crawler=crawler)
+                            scrape_result = await scraper.scrape(business, crawler=crawler)
+                            found_phone, found_confidence, found_url = scrape_result[:3]
+                            found_meta = scrape_result[3] if len(scrape_result) > 3 else None
                             
                             if found_phone:
                                 # Validate phone
@@ -149,12 +188,16 @@ async def process_swiss_phone_scraper(
                                     phone_results[normalized].append({
                                         'source': scraper.source_name,
                                         'confidence': found_confidence or 'medium',
-                                        'url': found_url or ''
+                                        'url': found_url or '',
+                                        'meta': found_meta or {}
                                     })
                                     stats['by_source'][scraper.source_name]['found'] += 1
                                     logger.info(f"Found phone {normalized} from {scraper.source_name} for {business_name}")
                                 else:
                                     logger.warning(f"Invalid phone format from {scraper.source_name}: {found_phone}")
+                            # Capture social links even in double-check mode if a phone scraper returns them
+                            if isinstance(found_meta, dict) and isinstance(found_meta.get('social'), dict):
+                                social_links.update(found_meta.get('social', {}))
                         
                         except Exception as e:
                             logger.error(f"Error scraping {scraper.source_name} for {business_name}: {str(e)}", exc_info=True)
@@ -166,6 +209,7 @@ async def process_swiss_phone_scraper(
                         best_sources = []
                         best_confidence = 'low'
                         best_url = ''
+                        best_meta = {}
                         
                         for normalized_phone, results_list in phone_results.items():
                             source_count = len(results_list)
@@ -196,6 +240,7 @@ async def process_swiss_phone_scraper(
                                 best_confidence = final_confidence
                                 # Use URL from highest priority source
                                 best_url = results_list[0]['url']
+                                best_meta = results_list[0].get('meta') or {}
                         
                         if best_phone:
                             phone = best_phone
@@ -203,14 +248,23 @@ async def process_swiss_phone_scraper(
                             sources_found_in = best_sources
                             confidence = best_confidence
                             source_url = best_url
+                            if isinstance(best_meta, dict):
+                                found_business_name = best_meta.get('business_name')
+                                found_address = best_meta.get('address')
+                                found_status = best_meta.get('status')
+                                found_website = best_meta.get('website')
+                                match_method = best_meta.get('method')
+                                address_similarity = best_meta.get('address_similarity')
                             logger.info(f"Selected phone {phone} for {business_name} from {len(best_sources)} sources: {best_sources}")
                 else:
                     # Original behavior: stop at first match
-                    for scraper in scrapers:
+                    for scraper in phone_scrapers:
                         stats['by_source'][scraper.source_name]['attempted'] += 1
                         
                         try:
-                            found_phone, found_confidence, found_url = await scraper.scrape(business, crawler=crawler)
+                            scrape_result = await scraper.scrape(business, crawler=crawler)
+                            found_phone, found_confidence, found_url = scrape_result[:3]
+                            found_meta = scrape_result[3] if len(scrape_result) > 3 else None
                             
                             if found_phone:
                                 # Validate phone
@@ -223,14 +277,38 @@ async def process_swiss_phone_scraper(
                                     sources_found_in = [scraper.source_name]
                                     
                                     # Calculate confidence based on matching
-                                    confidence = calculate_confidence(business, None, None, source)
+                                    if isinstance(found_meta, dict):
+                                        found_business_name = found_meta.get('business_name')
+                                        found_address = found_meta.get('address')
+                                        found_status = found_meta.get('status')
+                                        found_website = found_meta.get('website')
+                                        match_method = found_meta.get('method')
+                                        address_similarity = found_meta.get('address_similarity')
+                                    confidence = calculate_confidence(business, found_business_name, found_address, source)
                                     
                                     stats['by_source'][scraper.source_name]['found'] += 1
                                     logger.info(f"Found phone for {business_name}: {phone} (source: {source}, url: {source_url})")
                                     break  # Found phone, stop trying other sources
                                 else:
                                     logger.warning(f"Invalid phone format from {scraper.source_name}: {found_phone}")
+                            # Capture social links even if phone wasn't found
+                            if isinstance(found_meta, dict) and isinstance(found_meta.get('social'), dict):
+                                social_links.update(found_meta.get('social', {}))
                         
+                        except Exception as e:
+                            logger.error(f"Error scraping {scraper.source_name} for {business_name}: {str(e)}", exc_info=True)
+
+                # Social link discovery (link-only) optionally runs even if phone was found
+                if social_enabled and social_scrapers and (social_run_even_if_phone_found or not phone):
+                    for scraper in social_scrapers:
+                        stats['by_source'][scraper.source_name]['attempted'] += 1
+                        try:
+                            scrape_result = await scraper.scrape(business, crawler=crawler)
+                            found_phone, found_confidence, found_url = scrape_result[:3]
+                            found_meta = scrape_result[3] if len(scrape_result) > 3 else None
+                            if isinstance(found_meta, dict) and isinstance(found_meta.get('social'), dict):
+                                social_links.update(found_meta.get('social', {}))
+                                stats['by_source'][scraper.source_name]['found'] += 1
                         except Exception as e:
                             logger.error(f"Error scraping {scraper.source_name} for {business_name}: {str(e)}", exc_info=True)
                 
@@ -247,6 +325,14 @@ async def process_swiss_phone_scraper(
                 result['source'] = source or ''
                 result['source_url'] = source_url or ''
                 result['confidence_score'] = confidence or ''
+                result['found_business_name'] = found_business_name or ''
+                result['found_address'] = found_address or ''
+                result['found_status'] = found_status or ''
+                result['found_website'] = found_website or ''
+                result['match_method'] = match_method or ''
+                result['address_similarity'] = address_similarity if address_similarity is not None else ''
+                result['facebook_url'] = social_links.get('facebook_url', '') or ''
+                result['instagram_url'] = social_links.get('instagram_url', '') or ''
                 result['extraction_date'] = datetime.now().isoformat()
                 if enable_double_check:
                     result['sources_found_in'] = sources_found_in

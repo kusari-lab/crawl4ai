@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple, List
+from difflib import SequenceMatcher
+from typing import Dict, Optional, Tuple, List, Any
 from pydantic import BaseModel, Field
 from crawl4ai import CrawlerRunConfig, LLMConfig, BrowserConfig, CacheMode
 from crawl4ai.extraction_strategy import LLMExtractionStrategy
@@ -44,6 +46,8 @@ class PhoneExtractionResult(BaseModel):
     phone_number: Optional[str] = Field(None, description="Swiss phone number in format +41 XX XXX XX XX or 0XX XXX XX XX")
     business_name: Optional[str] = Field(None, description="Found business name")
     address: Optional[str] = Field(None, description="Found address")
+    status: Optional[str] = Field(None, description="open/closed/unknown if available")
+    website: Optional[str] = Field(None, description="Found website URL if available")
     confidence: str = Field(..., description="high/medium/low")
     notes: Optional[str] = Field(None, description="Any relevant notes")
 
@@ -69,7 +73,9 @@ class BaseScraper(ABC):
         self.config = config
         self.app_config = app_config
         self.logger = logging.getLogger(__name__)
-        self.source_name = self.__class__.__name__.replace('Scraper', '').lower()
+        # Use snake_case source names to match config keys (e.g. google_search, local_ch)
+        base_name = self.__class__.__name__.replace('Scraper', '')
+        self.source_name = re.sub(r'(?<!^)(?=[A-Z])', '_', base_name).lower()
         self.delay_seconds = config.get('delay_seconds', 2)
         
         scraper_config = app_config.get('swiss_phone_scraper', {})
@@ -176,6 +182,8 @@ IMPORTANT: IGNORE ADS AND SPONSORED CONTENT
                 phone_number=normalized,
                 business_name=extracted_content.get('business_name'),
                 address=extracted_content.get('address'),
+                status=extracted_content.get('status'),
+                website=extracted_content.get('website'),
                 confidence=extracted_content.get('confidence', 'medium'),
                 notes=extracted_content.get('notes')
             )
@@ -184,7 +192,7 @@ IMPORTANT: IGNORE ADS AND SPONSORED CONTENT
             self.logger.debug(f"Error extracting phone from result: {e}")
             return None
     
-    async def scrape(self, business_data: Dict, crawler=None) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    async def scrape(self, business_data: Dict, crawler=None) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
         """
         Scrape phone number for a business with retry logic.
         
@@ -193,10 +201,15 @@ IMPORTANT: IGNORE ADS AND SPONSORED CONTENT
             crawler: Optional crawler instance (uses pool if None)
             
         Returns:
-            Tuple of (phone_number, confidence, source_url) or (None, None, None) if not found
+            Tuple of (phone_number, confidence, source_url, meta) or (None, None, None, None) if not found
         """
         url = self.construct_search_url(business_data)
         instruction = self.get_extraction_instruction(business_data)
+        search_method = (
+            business_data.get('_active_search_method')
+            or (business_data.get('_search_strategy') or {}).get('search_method')
+            or 'name_based'
+        )
         
         for attempt in range(self.max_attempts):
             try:
@@ -251,7 +264,20 @@ IMPORTANT: IGNORE ADS AND SPONSORED CONTENT
                         )
                         
                         if is_valid:
-                            return extraction_result.phone_number, extraction_result.confidence, url
+                            addr_sim = self.compute_address_similarity(extraction_result.address, business_data)
+                            match_method = self.infer_match_method(search_method, addr_sim)
+                            meta = {
+                                "business_name": extraction_result.business_name,
+                                "address": extraction_result.address,
+                                "status": extraction_result.status,
+                                "website": extraction_result.website,
+                                "method": match_method,
+                                "address_similarity": addr_sim,
+                                "search_method": search_method,
+                                "confidence": extraction_result.confidence,
+                                "notes": extraction_result.notes,
+                            }
+                            return extraction_result.phone_number, extraction_result.confidence, url, meta
                         else:
                             self.logger.info(f"Phone {extraction_result.phone_number} rejected: {validation_reason}")
                             # Continue to next attempt or source
@@ -272,7 +298,18 @@ IMPORTANT: IGNORE ADS AND SPONSORED CONTENT
                         )
                         
                         if is_valid:
-                            return phone, "low", url
+                            meta = {
+                                "business_name": None,
+                                "address": None,
+                                "status": None,
+                                "website": None,
+                                "method": self.infer_match_method(search_method, 0.0),
+                                "address_similarity": 0.0,
+                                "search_method": search_method,
+                                "confidence": "low",
+                                "notes": "Extracted from text",
+                            }
+                            return phone, "low", url, meta
                         else:
                             self.logger.info(f"Phone {phone} rejected: {validation_reason}")
                             continue
@@ -283,9 +320,9 @@ IMPORTANT: IGNORE ADS AND SPONSORED CONTENT
                 
                 if attempt == self.max_attempts - 1:
                     self.logger.error(f"All attempts failed for {self.source_name}: {error_msg}")
-                    return None, None, None
+                    return None, None, None, None
         
-        return None, None, None
+        return None, None, None, None
     
     async def validate_phone_not_from_ads(
         self, 
@@ -437,4 +474,43 @@ Return:
                 return True
         
         return False
+
+    def compute_address_similarity(self, found_address: Optional[str], business_data: Dict) -> float:
+        """Compute fuzzy similarity between found address and input address (0..1)."""
+        if not found_address:
+            return 0.0
+
+        input_addr = (business_data.get('standardized_address') or '').strip()
+        if not input_addr:
+            # Fallback to legacy fields when standardized address isn't present
+            street = (business_data.get('STREET') or business_data.get('ADDRESS_LINE1') or '').strip()
+            city = (business_data.get('MAIL_CITY') or business_data.get('CITY') or '').strip()
+            input_addr = " ".join([p for p in (street, city) if p]).strip()
+
+        a = self._normalize_address_str(input_addr)
+        b = self._normalize_address_str(found_address)
+        if not a or not b:
+            return 0.0
+        return float(SequenceMatcher(None, a, b).ratio())
+
+    def infer_match_method(self, search_method: str, address_similarity: float) -> str:
+        """Infer final match method label for output metadata."""
+        if (search_method or "").lower() == "address_based":
+            return "address_match"
+        if address_similarity >= 0.85:
+            return "address_match"
+        return "name_match"
+
+    def _normalize_address_str(self, s: str) -> str:
+        """Normalize address-like string for fuzzy matching."""
+        if not s:
+            return ""
+        t = s.lower()
+        # remove "case postale" variants
+        t = re.sub(r"\b(case\s+postale|c\.?\s*p\.?|cp)\b[^\w]*\d*\b", " ", t)
+        # remove common punctuation
+        t = re.sub(r"[^\w\s]", " ", t)
+        # normalize whitespace
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
 

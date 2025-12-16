@@ -15,6 +15,22 @@ from swiss_phone_scraper import process_swiss_phone_scraper
 from utils import load_config, TaskStatus
 from redis import asyncio as aioredis
 
+# Optional preprocessing before sending into the job (also happens inside the job)
+try:
+    import importlib.util
+
+    _pre_path = Path(__file__).parent / "utils" / "business_preprocessor.py"
+    if _pre_path.exists():
+        _spec = importlib.util.spec_from_file_location("business_preprocessor", _pre_path)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        preprocess_business_row = _mod.preprocess_business_row
+    else:
+        raise ImportError("business_preprocessor not found")
+except (ImportError, Exception):
+    def preprocess_business_row(business: Dict) -> Dict:  # type: ignore
+        return business
+
 
 async def main():
     """Run scraper directly from command line."""
@@ -64,6 +80,10 @@ async def main():
         print(f"Using sources: {', '.join(sources)}")
     else:
         print("Using all available sources")
+
+    # Preprocess + prioritize (so early progress yields higher match rates)
+    businesses = [preprocess_business_row(b) for b in (businesses or [])]
+    businesses.sort(key=lambda b: int(b.get('search_priority', 2)) if str(b.get('search_priority', '')).isdigit() else 2)
     
     # Generate task ID
     import uuid

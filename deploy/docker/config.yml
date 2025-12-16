@@ -109,10 +109,14 @@ swiss_phone_scraper:
       enabled: true
       delay_seconds: 3
       priority: 1
-    zefix_ch:
+    facebook_search:
       enabled: true
       delay_seconds: 2
-      priority: 2
+      priority: 6
+    instagram_search:
+      enabled: true
+      delay_seconds: 2
+      priority: 7
   retry:
     max_attempts: 3
     base_delay: 1
@@ -126,3 +130,6 @@ swiss_phone_scraper:
     enabled: true
     strict_mode: true  # If true, reject phone if any ad indicators found
     validation_confidence_threshold: "medium"  # Only validate if confidence is below this
+  social_links:
+    enabled: true
+    run_even_if_phone_found: true
