@@ -96,18 +96,23 @@ swiss_phone_scraper:
     local_ch:
       enabled: true
       delay_seconds: 2
+      priority: 3
     search_ch:
       enabled: true
       delay_seconds: 2
+      priority: 4
     tel_search_ch:
       enabled: true
       delay_seconds: 2
+      priority: 5
     google_search:
       enabled: true
       delay_seconds: 3
+      priority: 1
     zefix_ch:
       enabled: true
       delay_seconds: 2
+      priority: 2
   retry:
     max_attempts: 3
     base_delay: 1

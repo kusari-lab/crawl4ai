@@ -136,7 +136,10 @@ async def swiss_phone_scraper_job_enqueue(
         task_id,
         payload.businesses,
         payload.sources,
-        payload.config
+        payload.config,
+        payload.source_priorities,
+        payload.enable_double_check if payload.enable_double_check is not None else False,
+        payload.min_sources_for_high_confidence if payload.min_sources_for_high_confidence is not None else 2
     )
     
     base_url = str(request.base_url)

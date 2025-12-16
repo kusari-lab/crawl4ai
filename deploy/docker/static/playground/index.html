@@ -328,6 +328,54 @@
                             </div>
                         </div>
 
+                        <!-- Source Priority Ordering -->
+                        <div class="bg-dark/50 p-3 rounded border border-border">
+                            <label class="block text-xs text-secondary mb-2 font-semibold">Source Priority Order</label>
+                            <p class="text-xs text-secondary mb-2">Set priority (1 = first, 2 = second, etc.). Lower number = checked first.</p>
+                            <div class="space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <label class="text-xs">Google Search:</label>
+                                    <input type="number" id="priority-google_search" value="1" min="1" max="10" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20 text-center">
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <label class="text-xs">zefix.ch:</label>
+                                    <input type="number" id="priority-zefix_ch" value="2" min="1" max="10" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20 text-center">
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <label class="text-xs">local.ch:</label>
+                                    <input type="number" id="priority-local_ch" value="3" min="1" max="10" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20 text-center">
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <label class="text-xs">search.ch:</label>
+                                    <input type="number" id="priority-search_ch" value="4" min="1" max="10" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20 text-center">
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <label class="text-xs">tel.search.ch:</label>
+                                    <input type="number" id="priority-tel_search_ch" value="5" min="1" max="10" 
+                                        class="bg-dark border border-border rounded px-2 py-1 text-sm w-20 text-center">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Double-Check Validation -->
+                        <div class="bg-dark/50 p-3 rounded border border-border">
+                            <label class="flex items-center mb-2">
+                                <input type="checkbox" id="enable-double-check" class="mr-2">
+                                <span class="text-xs font-semibold">Enable Double-Check Validation</span>
+                            </label>
+                            <p class="text-xs text-secondary mb-2">When enabled, checks all sources and boosts confidence when the same phone number is found in multiple sources.</p>
+                            <div class="mt-2">
+                                <label class="block text-xs text-secondary mb-1">Min Sources for High Confidence:</label>
+                                <input type="number" id="min-sources-threshold" value="2" min="1" max="10" 
+                                    class="bg-dark border border-border rounded px-2 py-1 text-sm w-20">
+                                <span class="text-xs text-secondary ml-2">sources</span>
+                            </div>
+                        </div>
+
                         <!-- Progress Display -->
                         <div id="swiss-progress" class="hidden">
                             <div class="mb-2">
@@ -491,6 +539,7 @@
                                     <th class="text-left p-2 border-b border-border">Business Name</th>
                                     <th class="text-left p-2 border-b border-border">Phone Number</th>
                                     <th class="text-left p-2 border-b border-border">Source</th>
+                                    <th class="text-left p-2 border-b border-border">Sources</th>
                                     <th class="text-left p-2 border-b border-border">Source URL</th>
                                     <th class="text-left p-2 border-b border-border">Confidence</th>
                                     <th class="text-left p-2 border-b border-border">Status</th>
@@ -498,7 +547,7 @@
                             </thead>
                             <tbody id="results-table-body">
                                 <tr>
-                                    <td colspan="7" class="text-center p-4 text-secondary">No results yet</td>
+                                    <td colspan="8" class="text-center p-4 text-secondary">No results yet</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1391,7 +1440,7 @@
             
             // Clear previous results
             document.getElementById('results-table-body').innerHTML = 
-                '<tr><td colspan="7" class="text-center p-4 text-secondary">Processing...</td></tr>';
+                '<tr><td colspan="8" class="text-center p-4 text-secondary">Processing...</td></tr>';
             
             // Show results tab
             const resultsTab = document.querySelector('button[data-tab="results"]');
@@ -1401,12 +1450,28 @@
             }
             
             try {
+                // Collect source priorities
+                const sourcePriorities = {};
+                selectedSources.forEach(source => {
+                    const priorityInput = document.getElementById(`priority-${source}`);
+                    if (priorityInput) {
+                        sourcePriorities[source] = parseInt(priorityInput.value) || 999;
+                    }
+                });
+                
+                // Collect validation settings
+                const enableDoubleCheck = document.getElementById('enable-double-check').checked;
+                const minSourcesThreshold = parseInt(document.getElementById('min-sources-threshold').value) || 2;
+                
                 const response = await fetch('/swiss-phone-scraper/job', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         businesses: selectedBusinesses,
-                        sources: selectedSources
+                        sources: selectedSources,
+                        source_priorities: sourcePriorities,
+                        enable_double_check: enableDoubleCheck,
+                        min_sources_for_high_confidence: minSourcesThreshold
                     })
                 });
                 
@@ -1540,7 +1605,7 @@
             
             if (results.length === 0) {
                 document.getElementById('results-table-body').innerHTML = 
-                    '<tr><td colspan="7" class="text-center p-4 text-secondary">No results</td></tr>';
+                    '<tr><td colspan="8" class="text-center p-4 text-secondary">No results</td></tr>';
                 return;
             }
             
@@ -1549,7 +1614,6 @@
             
             results.forEach((business, index) => {
                 const row = document.createElement('tr');
-                row.className = 'border-b border-border hover:bg-surface/50';
                 
                 const businessName = business.COMPANY_NAME0 || business.ADDRESS_LINE1 || 
                     `${business.FIRSTNAME || ''} ${business.LASTNAME || ''}`.trim() || 'Unknown';
@@ -1558,6 +1622,29 @@
                 const source = business.source || '';
                 const sourceUrl = business.source_url || '';
                 const confidence = business.confidence_score || '';
+                const sourcesFoundIn = business.sources_found_in || [];
+                const sourceCount = business.source_count || (source ? 1 : 0);
+                
+                // Highlight multi-source matches
+                const isMultiSource = sourceCount > 1;
+                if (isMultiSource) {
+                    row.className = 'border-b border-border hover:bg-surface/50 bg-primary/10';
+                } else {
+                    row.className = 'border-b border-border hover:bg-surface/50';
+                }
+                
+                // Create sources display
+                let sourcesCell = '-';
+                if (sourcesFoundIn.length > 0) {
+                    const sourcesList = sourcesFoundIn.map(s => escapeHtml(s)).join(', ');
+                    sourcesCell = `<span class="px-2 py-1 rounded text-xs ${
+                        sourceCount > 1 ? 'bg-primary/20 text-primary font-semibold' : 'bg-gray-500/20 text-gray-400'
+                    }" title="${sourcesList}">
+                        ${sourceCount}x ${sourceCount > 1 ? '✓' : ''}
+                    </span>`;
+                } else if (source) {
+                    sourcesCell = `<span class="px-2 py-1 rounded text-xs bg-gray-500/20 text-gray-400">1x</span>`;
+                }
                 
                 // Create clickable URL link
                 const urlCell = sourceUrl ? 
@@ -1575,6 +1662,7 @@
                         ${escapeHtml(phone) || '-'}
                     </td>
                     <td class="p-2 text-secondary text-xs">${escapeHtml(source) || '-'}</td>
+                    <td class="p-2">${sourcesCell}</td>
                     <td class="p-2 text-xs max-w-xs">${urlCell}</td>
                     <td class="p-2">
                         ${confidence ? `<span class="px-2 py-1 rounded text-xs ${

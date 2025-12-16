@@ -36,7 +36,10 @@ async def process_swiss_phone_scraper(
     task_id: str,
     businesses: List[Dict],
     sources: Optional[List[str]] = None,
-    override_config: Optional[Dict] = None
+    override_config: Optional[Dict] = None,
+    source_priorities: Optional[Dict[str, int]] = None,
+    enable_double_check: bool = False,
+    min_sources_for_high_confidence: int = 2
 ) -> None:
     """Process Swiss phone scraper job in background."""
     try:
@@ -81,6 +84,17 @@ async def process_swiss_phone_scraper(
             })
             return
         
+        # Sort scrapers by priority
+        def get_priority(scraper):
+            source_name = scraper.source_name
+            # Use provided priorities if available, otherwise use config
+            if source_priorities and source_name in source_priorities:
+                return source_priorities[source_name]
+            source_config = scraper_config.get('sources', {}).get(source_name, {})
+            return source_config.get('priority', 999)  # Default to low priority if not set
+        
+        scrapers.sort(key=get_priority)
+        
         phone_validator = PhoneValidator()
         results = []
         stats = {
@@ -114,34 +128,111 @@ async def process_swiss_phone_scraper(
                 source = None
                 confidence = None
                 source_url = None
+                sources_found_in = []
                 
-                # Try each source in priority order
-                for scraper in scrapers:
-                    stats['by_source'][scraper.source_name]['attempted'] += 1
+                if enable_double_check:
+                    # Multi-source validation: collect results from all sources
+                    phone_results = {}  # Map of normalized phone -> list of (source, confidence, url)
                     
-                    try:
-                        found_phone, found_confidence, found_url = await scraper.scrape(business, crawler=crawler)
+                    for scraper in scrapers:
+                        stats['by_source'][scraper.source_name]['attempted'] += 1
                         
-                        if found_phone:
-                            # Validate phone
-                            is_valid, normalized = phone_validator.validate_and_normalize(found_phone)
-                            if is_valid:
-                                phone = normalized
-                                source = scraper.source_name
-                                confidence = found_confidence or 'medium'
-                                source_url = found_url or ''
-                                
-                                # Calculate confidence based on matching
-                                confidence = calculate_confidence(business, None, None, source)
-                                
-                                stats['by_source'][scraper.source_name]['found'] += 1
-                                logger.info(f"Found phone for {business_name}: {phone} (source: {source}, url: {source_url})")
-                                break  # Found phone, stop trying other sources
-                            else:
-                                logger.warning(f"Invalid phone format from {scraper.source_name}: {found_phone}")
+                        try:
+                            found_phone, found_confidence, found_url = await scraper.scrape(business, crawler=crawler)
+                            
+                            if found_phone:
+                                # Validate phone
+                                is_valid, normalized = phone_validator.validate_and_normalize(found_phone)
+                                if is_valid:
+                                    if normalized not in phone_results:
+                                        phone_results[normalized] = []
+                                    phone_results[normalized].append({
+                                        'source': scraper.source_name,
+                                        'confidence': found_confidence or 'medium',
+                                        'url': found_url or ''
+                                    })
+                                    stats['by_source'][scraper.source_name]['found'] += 1
+                                    logger.info(f"Found phone {normalized} from {scraper.source_name} for {business_name}")
+                                else:
+                                    logger.warning(f"Invalid phone format from {scraper.source_name}: {found_phone}")
+                        
+                        except Exception as e:
+                            logger.error(f"Error scraping {scraper.source_name} for {business_name}: {str(e)}", exc_info=True)
                     
-                    except Exception as e:
-                        logger.error(f"Error scraping {scraper.source_name} for {business_name}: {str(e)}", exc_info=True)
+                    # Select best phone based on multi-source agreement
+                    if phone_results:
+                        best_phone = None
+                        best_score = -1
+                        best_sources = []
+                        best_confidence = 'low'
+                        best_url = ''
+                        
+                        for normalized_phone, results_list in phone_results.items():
+                            source_count = len(results_list)
+                            # Calculate aggregate confidence
+                            confidences = [r['confidence'] for r in results_list]
+                            base_confidence = max(confidences, key=lambda c: ['low', 'medium', 'high'].index(c))
+                            
+                            # Boost confidence based on source count
+                            if source_count >= min_sources_for_high_confidence:
+                                final_confidence = 'high'
+                            elif source_count >= 2:
+                                # Boost by one level
+                                if base_confidence == 'low':
+                                    final_confidence = 'medium'
+                                else:
+                                    final_confidence = 'high'
+                            else:
+                                final_confidence = base_confidence
+                            
+                            # Score: prioritize by source count, then confidence, then priority
+                            confidence_score = ['low', 'medium', 'high'].index(final_confidence)
+                            score = source_count * 100 + confidence_score
+                            
+                            if score > best_score:
+                                best_score = score
+                                best_phone = normalized_phone
+                                best_sources = [r['source'] for r in results_list]
+                                best_confidence = final_confidence
+                                # Use URL from highest priority source
+                                best_url = results_list[0]['url']
+                        
+                        if best_phone:
+                            phone = best_phone
+                            source = best_sources[0]  # Primary source (first in priority order)
+                            sources_found_in = best_sources
+                            confidence = best_confidence
+                            source_url = best_url
+                            logger.info(f"Selected phone {phone} for {business_name} from {len(best_sources)} sources: {best_sources}")
+                else:
+                    # Original behavior: stop at first match
+                    for scraper in scrapers:
+                        stats['by_source'][scraper.source_name]['attempted'] += 1
+                        
+                        try:
+                            found_phone, found_confidence, found_url = await scraper.scrape(business, crawler=crawler)
+                            
+                            if found_phone:
+                                # Validate phone
+                                is_valid, normalized = phone_validator.validate_and_normalize(found_phone)
+                                if is_valid:
+                                    phone = normalized
+                                    source = scraper.source_name
+                                    confidence = found_confidence or 'medium'
+                                    source_url = found_url or ''
+                                    sources_found_in = [scraper.source_name]
+                                    
+                                    # Calculate confidence based on matching
+                                    confidence = calculate_confidence(business, None, None, source)
+                                    
+                                    stats['by_source'][scraper.source_name]['found'] += 1
+                                    logger.info(f"Found phone for {business_name}: {phone} (source: {source}, url: {source_url})")
+                                    break  # Found phone, stop trying other sources
+                                else:
+                                    logger.warning(f"Invalid phone format from {scraper.source_name}: {found_phone}")
+                        
+                        except Exception as e:
+                            logger.error(f"Error scraping {scraper.source_name} for {business_name}: {str(e)}", exc_info=True)
                 
                 # Update statistics
                 if phone:
@@ -157,6 +248,9 @@ async def process_swiss_phone_scraper(
                 result['source_url'] = source_url or ''
                 result['confidence_score'] = confidence or ''
                 result['extraction_date'] = datetime.now().isoformat()
+                if enable_double_check:
+                    result['sources_found_in'] = sources_found_in
+                    result['source_count'] = len(sources_found_in)
                 results.append(result)
                 
                 # Update progress in Redis

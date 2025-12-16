@@ -46,3 +46,6 @@ class SwissPhoneScraperRequest(BaseModel):
     businesses: Optional[List[Dict]] = Field(None, description="JSON array of business objects")
     sources: Optional[List[str]] = Field(None, description="Which sources to use (local_ch, search_ch, etc.)")
     config: Optional[Dict] = Field(None, description="Override configuration")
+    source_priorities: Optional[Dict[str, int]] = Field(None, description="Map of source name to priority (1 = first, 2 = second, etc.)")
+    enable_double_check: Optional[bool] = Field(False, description="Enable multi-source validation (check all sources and boost confidence for matches)")
+    min_sources_for_high_confidence: Optional[int] = Field(2, description="Minimum number of sources needed for 'high' confidence")
