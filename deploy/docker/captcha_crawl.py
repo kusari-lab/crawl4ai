@@ -4,10 +4,11 @@ BotDetect captcha solver for fao.ge.ch using crawl4ai + CapSolver.
 Flow:
   1. Load page with session
   2. Extract captcha image as base64 via JS canvas
-  3. Send to CapSolver ImageToTextTask with the ``number`` module (FAO captcha is digits only)
+  3. Send to CapSolver ImageToTextTask (number module, single image)
   4. Fill the input and submit via the Valider button click; wait_for the captcha image to disappear
-  5. Return HTML; success is false if captcha markup or "code saisi est incorrect" remains.
-  6. Optional follow URLs only after primary captcha cleared; optional LLM extraction
+  5. On failure, re-navigate the page for a fresh code and retry (bounded loop)
+  6. Return HTML; success is false if captcha markup or "code saisi est incorrect" remains.
+  7. Optional follow URLs only after primary captcha cleared; optional LLM extraction
 
 The CapSolver answer is used verbatim (no stripping / no uppercasing).
 
@@ -57,6 +58,12 @@ _FAO_PAGE_TIMEOUT_MS = 90000
 _DEFAULT_POST_CAPTCHA_WAIT_FOR = (
     "js:() => !document.getElementById('FAOCaptcha_CaptchaImage')"
 )
+
+# BotDetect single-shot OCR is unreliable; on failure we reload a fresh code and retry.
+_FAO_MAX_CAPTCHA_ATTEMPTS = 15
+# Observed FAO codes are short digit strings; reads outside this band are misreads.
+_FAO_MIN_CODE_LEN = 4
+_FAO_MAX_CODE_LEN = 6
 
 
 def _browser_config() -> BrowserConfig:
@@ -310,21 +317,25 @@ async def crawl_with_botdetect(
     browser_cfg = _browser_config()
     session_id = f"fao_captcha_{uuid.uuid4().hex[:16]}"
 
+    def _load_config() -> CrawlerRunConfig:
+        # Full navigation to (re)render a fresh BotDetect code in this session.
+        return CrawlerRunConfig(
+            magic=True,
+            wait_until=_FAO_WAIT_UNTIL,
+            page_timeout=_FAO_PAGE_TIMEOUT_MS,
+            session_id=session_id,
+            locale=_FAO_LOCALE,
+            timezone_id=_FAO_TIMEZONE,
+            geolocation=_FAO_GEO,
+        )
+
     try:
         async with AsyncWebCrawler(config=browser_cfg) as crawler:
 
             result = await crawler.arun(
                 url=url,
                 cache_mode=CacheMode.BYPASS,
-                config=CrawlerRunConfig(
-                    magic=True,
-                    wait_until=_FAO_WAIT_UNTIL,
-                    page_timeout=_FAO_PAGE_TIMEOUT_MS,
-                    session_id=session_id,
-                    locale=_FAO_LOCALE,
-                    timezone_id=_FAO_TIMEZONE,
-                    geolocation=_FAO_GEO,
-                ),
+                config=_load_config(),
             )
 
             if not result.success:
@@ -345,57 +356,118 @@ async def crawl_with_botdetect(
                 timezone_id=_FAO_TIMEZONE,
                 geolocation=_FAO_GEO,
             )
-            extract_result = await crawler.arun(url=url, config=extract_config)
 
-            js_output = _unwrap_js_payload(extract_result.js_execution_result)
-            if not js_output or "base64" not in js_output:
-                return _error(
-                    url,
-                    f"Failed to extract captcha image: {js_output}",
+            max_attempts = _FAO_MAX_CAPTCHA_ATTEMPTS
+            answer = ""
+            top_err: Optional[str] = None
+            captcha_still = True
+            logical_success = False
+            primary_page: dict = _error(url, "Captcha solving did not run")
+
+            for attempt in range(1, max_attempts + 1):
+                extract_result = await crawler.arun(url=url, config=extract_config)
+                js_output = _unwrap_js_payload(extract_result.js_execution_result)
+                if not js_output or "base64" not in js_output:
+                    return _error(
+                        url,
+                        f"Failed to extract captcha image: {js_output}",
+                    )
+
+                captcha_b64 = js_output["base64"]
+
+                # FAO captcha is digits only -> use the "number" module. The model is
+                # deterministic per image, so a single image is enough (sending copies
+                # just returns identical answers and multiplies cost). The number module
+                # requires the image in the "images" list (body alone is rejected).
+                capsolver_task: Dict[str, Any] = {
+                    "type": "ImageToTextTask",
+                    "websiteURL": url,
+                    "module": "number",
+                    "body": captcha_b64,
+                    "images": [captcha_b64],
+                }
+                solution = capsolver.solve(capsolver_task)
+
+                answers = [
+                    str(a).strip()
+                    for a in (solution.get("answers") or [])
+                    if str(a).strip()
+                ]
+                answer = answers[0] if answers else (solution.get("text") or "").strip()
+                logger.info(
+                    "[captcha] attempt %d/%d OCR result: %s",
+                    attempt,
+                    max_attempts,
+                    answer,
                 )
 
-            captcha_b64 = js_output["base64"]
+                if not answer:
+                    return _error(url, "CapSolver returned empty answer")
 
-            capsolver_task: Dict[str, Any] = {
-                "type": "ImageToTextTask",
-                "body": captcha_b64,
-                "images": [captcha_b64],
-                "websiteURL": url,
-                "module": "number",
-            }
-            solution = capsolver.solve(capsolver_task)
+                # Skip obvious misreads (e.g. 6-9 digits from repeated glyphs) without
+                # wasting a submit; just re-navigate for a fresh code.
+                if not (
+                    answer.isdigit()
+                    and _FAO_MIN_CODE_LEN <= len(answer) <= _FAO_MAX_CODE_LEN
+                ):
+                    logger.info(
+                        "[captcha] attempt %d/%d implausible read %r; reloading",
+                        attempt,
+                        max_attempts,
+                        answer,
+                    )
+                    if attempt < max_attempts:
+                        await crawler.arun(
+                            url=url,
+                            cache_mode=CacheMode.BYPASS,
+                            config=_load_config(),
+                        )
+                    continue
 
-            answer = (solution.get("text") or "").strip()
-            if not answer:
-                answers = solution.get("answers") or []
-                answer = (answers[0] if answers else "").strip()
-            if not answer:
-                return _error(url, "CapSolver returned empty answer")
+                submit_kw = _shared_run_kwargs(session_id, extraction)
+                submit_config = CrawlerRunConfig(
+                    js_code_before_wait=js_fill_and_submit(answer),
+                    wait_for=wait_spec,
+                    wait_for_timeout=min(_FAO_PAGE_TIMEOUT_MS, 30000),
+                    js_only=True,
+                    **submit_kw,
+                )
+                final_result = await crawler.arun(url=url, config=submit_config)
 
-            logger.info("[captcha] CapSolver OCR result: %s", answer)
+                primary_page = _crawl_result_to_page(url, final_result)
+                top_err = primary_page.get("error")
+                primary_html = primary_page.get("html")
+                captcha_still = _html_indicates_captcha_failed(primary_html)
+                logical_success = bool(
+                    primary_page.get("success") and not captcha_still and not top_err
+                )
+                if logical_success:
+                    logger.info("[captcha] cleared on attempt %d/%d", attempt, max_attempts)
+                    break
 
-            submit_kw = _shared_run_kwargs(session_id, extraction)
+                if top_err and not captcha_still:
+                    # A real crawl/navigation error, not a wrong code -> stop retrying.
+                    break
 
-            submit_config = CrawlerRunConfig(
-                js_code_before_wait=js_fill_and_submit(answer),
-                wait_for=wait_spec,
-                wait_for_timeout=min(_FAO_PAGE_TIMEOUT_MS, 120000),
-                js_only=True,
-                **submit_kw,
-            )
-            final_result = await crawler.arun(url=url, config=submit_config)
+                logger.info(
+                    "[captcha] attempt %d/%d did not clear (answer=%s); %s",
+                    attempt,
+                    max_attempts,
+                    answer,
+                    "reloading captcha" if attempt < max_attempts else "giving up",
+                )
+                if attempt < max_attempts:
+                    # Re-navigate to obtain a fresh captcha code for the next attempt.
+                    await crawler.arun(
+                        url=url,
+                        cache_mode=CacheMode.BYPASS,
+                        config=_load_config(),
+                    )
 
-            primary_page = _crawl_result_to_page(url, final_result)
-            top_err = primary_page.get("error")
-            primary_html = primary_page.get("html")
-            captcha_still = _html_indicates_captcha_failed(primary_html)
-            logical_success = bool(
-                primary_page.get("success") and not captcha_still and not top_err
-            )
             if captcha_still and not top_err:
                 top_err = (
-                    "Captcha not cleared: page still shows BotDetect or "
-                    "'code saisi est incorrect'. Check CAPSOLVER / image quality or retry."
+                    f"Captcha not cleared after {max_attempts} attempts: page still shows "
+                    "BotDetect or 'code saisi est incorrect'. Check CAPSOLVER / image quality."
                 )
 
             pages: List[dict] = [primary_page]
