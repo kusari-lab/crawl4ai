@@ -8,6 +8,7 @@ Crawl4AI FastAPI entry‑point
 
 # ── stdlib & 3rd‑party imports ───────────────────────────────
 from crawler_pool import get_crawler, release_crawler, close_all, janitor
+from captcha_crawl import crawl_with_botdetect
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 from crawl4ai.__version__ import __version__
 from auth import create_access_token, get_token_dependency, TokenRequest
@@ -741,6 +742,79 @@ async def stream_process(crawl_request: CrawlRequestWithHooks):
         media_type="application/x-ndjson",
         headers=headers,
     )
+
+
+@app.post("/crawl-captcha")
+@limiter.limit(config["rate_limiting"]["default_limit"])
+async def crawl_captcha_endpoint(
+    request: Request,
+    _td: Dict = Depends(token_dep),
+):
+    """
+    Crawl a BotDetect-protected page (for example fao.ge.ch image captcha).
+
+    Request body (JSON):
+
+    - ``url`` (required): first page URL (captcha gate).
+    - ``follow_urls`` (optional): list of extra URLs in the same browser session
+      after solve — absolute URL, path relative to ``url``, or ``?query=``.
+    - ``wait_for`` (optional): crawl4ai ``smart_wait`` after submit; default removes
+      captcha image element wait.
+    - ``llm_extract`` / ``llm_instruction`` / ``llm_schema`` / ``llm_provider`` /
+      ``llm_temperature``: optional LLM structured extraction (same config as other LLM routes).
+
+    Requires ``CAPSOLVER_API_KEY``. Optional: ``PROXY_URL``, ``PROXY_USERNAME``,
+    ``PROXY_PASSWORD`` when the target must be reached via proxy.
+
+    Response: ``pages`` list with per-URL ``html``, ``markdown``, ``success``, ``error``,
+    ``extracted_content``; top-level fields mirror the primary (first) page.
+    """
+    data = await request.json()
+    url = data.get("url")
+    if not url:
+        raise HTTPException(400, "url is required")
+    validate_url_scheme(url)
+    try:
+        validate_webhook_url(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    follow_urls = data.get("follow_urls")
+    if follow_urls is not None and not isinstance(follow_urls, list):
+        raise HTTPException(400, "follow_urls must be a list of strings")
+    if follow_urls:
+        for u in follow_urls:
+            if not isinstance(u, str):
+                raise HTTPException(400, "follow_urls must contain only strings")
+
+    wait_for = data.get("wait_for")
+    if wait_for is not None and not isinstance(wait_for, str):
+        raise HTTPException(400, "wait_for must be a string")
+
+    llm_extract = bool(data.get("llm_extract"))
+    llm_instruction = data.get("llm_instruction")
+    if llm_instruction is not None and not isinstance(llm_instruction, str):
+        raise HTTPException(400, "llm_instruction must be a string")
+    llm_schema = data.get("llm_schema")
+    llm_provider = data.get("llm_provider")
+    if llm_provider is not None and not isinstance(llm_provider, str):
+        raise HTTPException(400, "llm_provider must be a string")
+    llm_temperature = data.get("llm_temperature")
+    if llm_temperature is not None and not isinstance(llm_temperature, (int, float)):
+        raise HTTPException(400, "llm_temperature must be a number")
+
+    result = await crawl_with_botdetect(
+        url,
+        app_config=config,
+        follow_urls=follow_urls,
+        wait_for=wait_for,
+        llm_extract=llm_extract,
+        llm_instruction=llm_instruction,
+        llm_schema=llm_schema,
+        llm_provider=llm_provider,
+        llm_temperature=llm_temperature,
+    )
+    return JSONResponse(content=result)
 
 
 def chunk_code_functions(code_md: str) -> List[str]:

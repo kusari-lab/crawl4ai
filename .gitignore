@@ -5,6 +5,7 @@
 *.db
 
 # Environment files
+.llm.env
 .env
 .env.local
 

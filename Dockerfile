@@ -176,8 +176,10 @@ RUN crawl4ai-setup
 
 RUN playwright install --with-deps
 
+# Copy all Playwright browser bundles (chromium, chromium_headless_shell, ffmpeg, etc.).
+# Persistent context and newer headless modes expect chromium_headless_shell-* under ~/.cache/ms-playwright.
 RUN mkdir -p /home/appuser/.cache/ms-playwright \
-    && cp -r /root/.cache/ms-playwright/chromium-* /home/appuser/.cache/ms-playwright/ \
+    && cp -a /root/.cache/ms-playwright/. /home/appuser/.cache/ms-playwright/ \
     && chown -R appuser:appuser /home/appuser/.cache/ms-playwright
 
 RUN crawl4ai-doctor
